@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import json
 import urllib.error
 import urllib.request
 import winreg
@@ -25,6 +26,9 @@ from config import (
     ROUTER_PASSWORD,
     ROUTER_PORT,
     ROUTER_USER,
+    OUTBOUNDS_CONFIG_PATH,
+    ROUTING_CONFIG_PATH,
+    SITE_CHECKS_FILE,
     STATUS_POLL_INTERVAL,
     TEMP_CONFIG_DIR,
     TRAY_ICON_OFF,
@@ -98,6 +102,7 @@ class VPNTrayApp:
         self.tray.setIcon(self.icon_unknown)
 
         self._setup_tray_menu()
+        os.makedirs(os.path.dirname(SITE_CHECKS_FILE), exist_ok=True)
         os.makedirs(TEMP_CONFIG_DIR, exist_ok=True)
         self.cleanup_temp_dir()
 
@@ -386,10 +391,57 @@ RAM:
             )
 
     def get_connectivity_checks(self) -> list[ConnectivityCheck]:
+        definitions = self.load_site_checks()
         return [
             self.probe_url(item["name"], item["url"], item["expected"])
-            for item in CONNECTIVITY_CHECKS
+            for item in definitions
         ]
+
+    def _read_remote_json(self, remote_path: str) -> dict:
+        raw = self._ssh_exec(f"cat {remote_path}")
+        return json.loads(raw)
+
+    def _write_remote_json(self, remote_path: str, data: dict) -> None:
+        temp_path = self._local_temp_path(remote_path + ".save")
+        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+        try:
+            with open(temp_path, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            self.ssh.upload_file(temp_path, remote_path)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    def load_outbounds_config(self) -> dict:
+        return self._read_remote_json(OUTBOUNDS_CONFIG_PATH)
+
+    def save_outbounds_config(self, data: dict) -> None:
+        self._write_remote_json(OUTBOUNDS_CONFIG_PATH, data)
+
+    def load_routing_config(self) -> dict:
+        return self._read_remote_json(ROUTING_CONFIG_PATH)
+
+    def save_routing_config(self, data: dict) -> None:
+        self._write_remote_json(ROUTING_CONFIG_PATH, data)
+
+    def load_site_checks(self) -> list[dict]:
+        if os.path.isfile(SITE_CHECKS_FILE):
+            try:
+                with open(SITE_CHECKS_FILE, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, list):
+                    return loaded
+            except Exception:
+                pass
+        return [dict(item) for item in CONNECTIVITY_CHECKS]
+
+    def save_site_checks(self, checks: list[dict]) -> None:
+        with open(SITE_CHECKS_FILE, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(checks, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
 
     def _compose_tray_title(self, status: str) -> str:
         if status == "on":

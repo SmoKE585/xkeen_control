@@ -3,6 +3,10 @@ from urllib.parse import urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_DIR = os.path.join(BASE_DIR, "assets", "icons")
+APP_DATA_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", BASE_DIR),
+    "xKeen Control",
+)
 APP_ICON_ICO = os.path.join(ICON_DIR, "app.ico")
 TRAY_ICON_ON = os.path.join(ICON_DIR, "tray_on.png")
 TRAY_ICON_OFF = os.path.join(ICON_DIR, "tray_off.png")
@@ -21,10 +25,12 @@ STATUS_POLL_INTERVAL = 180
 XRAY_CONFIG_DIR = "/opt/etc/xray/configs"
 VPN_RESTART_DELAY_SEC = 3
 TEMP_CONFIG_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", BASE_DIR),
-    "xKeen Control",
+    APP_DATA_DIR,
     "temp_configs",
 )
+SITE_CHECKS_FILE = os.path.join(APP_DATA_DIR, "site_checks.json")
+OUTBOUNDS_CONFIG_PATH = f"{XRAY_CONFIG_DIR.rstrip('/')}/04_outbounds.json"
+ROUTING_CONFIG_PATH = f"{XRAY_CONFIG_DIR.rstrip('/')}/05_routing.json"
 
 NOTEPADPP_CANDIDATES = [
     os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Notepad++", "notepad++.exe"),
