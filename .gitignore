@@ -14,6 +14,7 @@ dist/
 *.log
 
 config_local.py
+.env
 
 .DS_Store
 Thumbs.db

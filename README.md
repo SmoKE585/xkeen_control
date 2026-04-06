@@ -20,34 +20,38 @@
 
 ## Основные файлы
 
-- [app.py](./app.py) - логика приложения, SSH-команды, действия трея
+- [app.py](./app.py) - запуск приложения, сигналы, трей и оркестрация
 - [ui.py](./ui.py) - интерфейс PySide6 / Qt
+- [services/router_service.py](./services/router_service.py) - работа с Keenetic и JSON-конфигами
+- [services/editor_sync.py](./services/editor_sync.py) - temp-файлы и синхронизация редактирования
 - [ssh_session.py](./ssh_session.py) - SSH-сессия на Paramiko
-- [config.py](./config.py) - настройки роутера, путей и команд
+- [config.py](./config.py) - значения по умолчанию и чтение `.env`
 - [vpn_tray.spec](./vpn_tray.spec) - сборка через PyInstaller
 
 ## Настройка
 
-Основные параметры лежат в [config.py](./config.py):
+Пользовательские настройки задаются в файле `.env`.
 
-- `ROUTER_HOST`
-- `ROUTER_PORT`
-- `ROUTER_USER`
-- `ROUTER_PASSWORD`
-- `XRAY_CONFIG_DIR`
-- `TEMP_CONFIG_DIR`
-- `CMD_VPN_ON`
-- `CMD_VPN_OFF`
-- `CMD_STATUS`
-- `CONNECTIVITY_CHECKS`
+Создайте `.env` рядом с приложением или возьмите за основу [.env.example](./.env.example):
 
-Для локальных секретов создайте `config_local.py`. Этот файл перекрывает значения из `config.py` и не попадает в git.
-
-Пример:
-
-```python
-ROUTER_PASSWORD = "ваш_пароль"
+```env
+ROUTER_HOST=192.168.1.1
+ROUTER_PORT=22
+ROUTER_USER=root
+ROUTER_PASSWORD=ваш_пароль
+XRAY_CONFIG_DIR=/opt/etc/xray/configs
+NOTEPADPP_PATH=C:\Program Files\Notepad++\notepad++.exe
 ```
+
+Без пересборки можно менять:
+
+- адрес и SSH-доступ к роутеру
+- команды управления `xkeen`
+- пути к конфигам и temp-папке
+- путь к `Notepad++`
+- стартовые сайты для проверок
+
+`config.py` теперь нужен в основном как кодовый слой с дефолтами.
 
 ## Запуск
 
