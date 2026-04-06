@@ -34,7 +34,7 @@ class StatsWindow:
     def __init__(self, app: "VPNTrayApp"):
         self.app = app
         self.root = tk.Tk()
-        self.root.title("Управление xkeen")
+        self.root.title("xKeen Control")
         self.root.geometry("1220x780")
         self.root.minsize(1080, 700)
         self.root.configure(bg=self.BG)
@@ -142,7 +142,7 @@ class StatsWindow:
 
         tk.Label(
             title_block,
-            text="Управление xkeen",
+            text="xKeen Control",
             bg=self.PANEL_ALT,
             fg=self.INK,
             font=("Bahnschrift SemiBold", 24),
@@ -402,7 +402,7 @@ class StatsWindow:
             editor_name = "Notepad++"
         else:
             editor_name = "Системный редактор"
-        self.root.title(f"Управление xkeen [{editor_name}]")
+        self.root.title(f"xKeen Control [{editor_name}]")
 
     def _build_metric_card(
         self,

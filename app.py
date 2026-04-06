@@ -37,7 +37,7 @@ from ui import StatsWindow
 class VPNTrayApp:
     ANSI_RE = re.compile(r"\x1B\[[0-9;]*[A-Za-z]")
     STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    STARTUP_VALUE_NAME = "VPNTray"
+    STARTUP_VALUE_NAME = "xKeen Control"
 
     def __init__(self):
         self.icon: Optional[pystray.Icon] = None
@@ -175,7 +175,7 @@ RAM:
             url,
             method="GET",
             headers={
-                "User-Agent": "VPNTray/1.0",
+                "User-Agent": "xKeen-Control/1.0",
                 "Cache-Control": "no-cache",
             },
         )
@@ -378,7 +378,7 @@ RAM:
             start_icon = self.icon_unknown
         title = self._compose_tray_title(initial_status)
 
-        self.icon = pystray.Icon("vpn_tray", start_icon, title, menu)
+        self.icon = pystray.Icon("xkeen_control", start_icon, title, menu)
 
         thread = threading.Thread(target=self.poll_status_loop, daemon=True)
         thread.start()

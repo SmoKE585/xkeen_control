@@ -1,4 +1,4 @@
-# xkeen_control
+# xKeen Control
 
 Приложение для Windows с иконкой в трее для управления сервисом `xkeen`, поднятым на роутере Keenetic.
 
