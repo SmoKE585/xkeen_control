@@ -25,7 +25,7 @@ if errorlevel 1 (
 )
 
 echo [2/3] Install dependencies...
-python -m pip install --upgrade pyinstaller paramiko pillow pystray
+python -m pip install --upgrade pyinstaller paramiko pillow PySide6
 if errorlevel 1 (
   echo [ERROR] Failed to install dependencies.
   pause

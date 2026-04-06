@@ -12,11 +12,12 @@
 - проверяет доступность сайтов по разным маршрутам
 - открывает и редактирует JSON-конфиги из SMB-каталога роутера
 - использует Notepad++, если он установлен
+- работает на `PySide6`
 
 ## Основные файлы
 
 - [app.py](./app.py) - логика приложения, SSH-команды, действия трея
-- [ui.py](./ui.py) - интерфейс Tkinter
+- [ui.py](./ui.py) - интерфейс PySide6 / Qt
 - [ssh_session.py](./ssh_session.py) - SSH-сессия на Paramiko
 - [config.py](./config.py) - настройки роутера, SMB и команд
 - [vpn_tray.spec](./vpn_tray.spec) - сборка через PyInstaller
@@ -75,6 +76,6 @@ dist\vpn_tray.exe
 ## Зависимости
 
 - `paramiko`
-- `pystray`
+- `PySide6`
 - `pillow`
 - `pyinstaller`

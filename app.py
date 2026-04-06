@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -9,9 +10,12 @@ import urllib.request
 import winreg
 from typing import Optional
 
-import pystray
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QStyle
 
 from config import (
+    APP_ICON_ICO,
     CMD_STATUS,
     CMD_VPN_OFF,
     CMD_VPN_ON,
@@ -21,17 +25,32 @@ from config import (
     ROUTER_PASSWORD,
     ROUTER_PORT,
     ROUTER_USER,
+    SMB_HOST,
+    SMB_PASS,
+    SMB_USER,
     STATUS_POLL_INTERVAL,
     TRAY_ICON_OFF,
     TRAY_ICON_ON,
     TRAY_ICON_UNKNOWN,
     VPN_RESTART_DELAY_SEC,
+    XRAY_CONFIG_DIR,
     format_host,
 )
-from icons import create_fallback_icon, load_icon_from_file
 from models import ConnectivityCheck, RouterStats
 from ssh_session import SSHSession
-from ui import StatsWindow
+from ui import MainWindow
+
+
+class AppSignals(QObject):
+    tray_status_changed = Signal(str)
+    status_changed = Signal(str)
+    connection_changed = Signal(bool)
+    stats_changed = Signal(object)
+    checks_changed = Signal(list)
+    busy_changed = Signal(bool)
+    error_occurred = Signal(str, str)
+    configs_changed = Signal(list)
+    tray_tooltip_changed = Signal(str)
 
 
 class VPNTrayApp:
@@ -40,23 +59,110 @@ class VPNTrayApp:
     STARTUP_VALUE_NAME = "xKeen Control"
 
     def __init__(self):
-        self.icon: Optional[pystray.Icon] = None
+        QGuiApplication.setApplicationDisplayName("xKeen Control")
+
+        self.qt_app = QApplication.instance() or QApplication(sys.argv)
+        self.qt_app.setQuitOnLastWindowClosed(False)
+
         self.current_status: str = "unknown"
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
+        self.signals = AppSignals()
 
         self.ssh = SSHSession(ROUTER_HOST, ROUTER_PORT, ROUTER_USER, ROUTER_PASSWORD)
-        self.ui = StatsWindow(self)
+        self.window = MainWindow(self)
+        self.tray = self.window.tray_icon
 
-        self.icon_on = load_icon_from_file(TRAY_ICON_ON) or create_fallback_icon("on")
-        self.icon_off = load_icon_from_file(TRAY_ICON_OFF) or create_fallback_icon("off")
-        self.icon_unknown = load_icon_from_file(TRAY_ICON_UNKNOWN) or create_fallback_icon("unknown")
+        self.signals.status_changed.connect(self.window.set_status_text)
+        self.signals.tray_status_changed.connect(self._apply_status)
+        self.signals.connection_changed.connect(self.window.set_connection_state)
+        self.signals.stats_changed.connect(self.window.update_stats_cards)
+        self.signals.checks_changed.connect(self.window.update_connectivity_checks)
+        self.signals.busy_changed.connect(self.window.set_busy)
+        self.signals.error_occurred.connect(self.window.show_error)
+        self.signals.configs_changed.connect(self.window.update_configs)
+        self.signals.tray_tooltip_changed.connect(self._apply_tray_tooltip)
+
+        self.icon_on = self._load_icon(TRAY_ICON_ON, QStyle.SP_DialogApplyButton)
+        self.icon_off = self._load_icon(TRAY_ICON_OFF, QStyle.SP_DialogCancelButton)
+        self.icon_unknown = self._load_icon(TRAY_ICON_UNKNOWN, QStyle.SP_MessageBoxQuestion)
+        self.window.setWindowIcon(self._load_window_icon())
+        self.tray.setIcon(self.icon_unknown)
+
+        self._setup_tray_menu()
+
+    def _load_window_icon(self) -> QIcon:
+        if os.path.isfile(APP_ICON_ICO):
+            icon = QIcon(APP_ICON_ICO)
+            if not icon.isNull():
+                return icon
+        return self.qt_app.style().standardIcon(QStyle.SP_ComputerIcon)
+
+    def _load_icon(self, path: str, fallback: QStyle.StandardPixmap) -> QIcon:
+        if os.path.isfile(path):
+            icon = QIcon(path)
+            if not icon.isNull():
+                return icon
+        return self.qt_app.style().standardIcon(fallback)
+
+    def _setup_tray_menu(self) -> None:
+        menu = QMenu()
+
+        show_action = QAction("Открыть", self.window)
+        show_action.triggered.connect(self.action_show)
+        menu.addAction(show_action)
+
+        menu.addSeparator()
+
+        on_action = QAction("Включить", self.window)
+        on_action.triggered.connect(self.action_on)
+        menu.addAction(on_action)
+
+        off_action = QAction("Выключить", self.window)
+        off_action.triggered.connect(self.action_off)
+        menu.addAction(off_action)
+
+        restart_action = QAction("Перезапустить", self.window)
+        restart_action.triggered.connect(self.action_restart)
+        menu.addAction(restart_action)
+
+        menu.addSeparator()
+
+        settings_action = QAction("Настройки", self.window)
+        settings_action.triggered.connect(self.action_settings)
+        menu.addAction(settings_action)
+
+        refresh_action = QAction("Проверить статус", self.window)
+        refresh_action.triggered.connect(self.action_check)
+        menu.addAction(refresh_action)
+
+        menu.addSeparator()
+
+        exit_action = QAction("Выход", self.window)
+        exit_action.triggered.connect(self.action_exit)
+        menu.addAction(exit_action)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self.window.on_tray_activated)
+
+    def _apply_tray_tooltip(self, tooltip: str) -> None:
+        self.tray.setToolTip(tooltip)
 
     def strip_ansi(self, text: str) -> str:
         return self.ANSI_RE.sub("", text)
 
     def _ssh_exec(self, cmd: str) -> str:
         return self.ssh.exec(cmd)
+
+    def ensure_smb_connected(self) -> None:
+        try:
+            subprocess.run(
+                ["net", "use", SMB_HOST, f"/user:{SMB_USER}", SMB_PASS],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
 
     def get_status(self) -> str:
         try:
@@ -72,16 +178,10 @@ class VPNTrayApp:
             return "unknown"
 
     def vpn_on(self) -> None:
-        try:
-            self._ssh_exec(CMD_VPN_ON)
-        except Exception:
-            pass
+        self._ssh_exec(CMD_VPN_ON)
 
     def vpn_off(self) -> None:
-        try:
-            self._ssh_exec(CMD_VPN_OFF)
-        except Exception:
-            pass
+        self._ssh_exec(CMD_VPN_OFF)
 
     def vpn_restart(self) -> None:
         self.vpn_off()
@@ -121,7 +221,7 @@ class VPNTrayApp:
         mem_text = "Не удалось получить данные"
         if len(mem_lines) >= 2:
             parts = mem_lines[1].split()
-            if len(parts) >= 7:
+            if len(parts) >= 4:
                 total = parts[1]
                 used = parts[2]
                 free = parts[3]
@@ -149,11 +249,11 @@ class VPNTrayApp:
 Аптайм:
 {uptime_text}
 
-Load average:
+Средняя нагрузка:
 {load}
 
 ================= CPU =================
-Нагрузка xray:
+Нагрузка xkeen:
 {xray_cpu}
 
 ================= Память =================
@@ -219,11 +319,11 @@ RAM:
 
     def _compose_tray_title(self, status: str) -> str:
         if status == "on":
-            prefix = "VPN: ВКЛЮЧЕН"
+            prefix = "xKeen Control: ВКЛЮЧЕН"
         elif status == "off":
-            prefix = "VPN: ВЫКЛЮЧЕН"
+            prefix = "xKeen Control: ВЫКЛЮЧЕН"
         else:
-            prefix = "VPN: НЕИЗВЕСТНО"
+            prefix = "xKeen Control: НЕИЗВЕСТНО"
 
         try:
             checks = self.get_connectivity_checks()
@@ -235,75 +335,21 @@ RAM:
         except Exception:
             return prefix
 
-    def update_icon_status(self, new_status: str) -> None:
+    def _apply_status(self, new_status: str) -> None:
         with self.lock:
             self.current_status = new_status
-            if not self.icon:
-                return
-
             if new_status == "on":
-                self.icon.icon = self.icon_on
+                self.tray.setIcon(self.icon_on)
             elif new_status == "off":
-                self.icon.icon = self.icon_off
+                self.tray.setIcon(self.icon_off)
             else:
-                self.icon.icon = self.icon_unknown
-            self.icon.title = self._compose_tray_title(new_status)
+                self.tray.setIcon(self.icon_unknown)
 
-        try:
-            self.ui.root.after(0, lambda: self.ui.set_status_text(new_status))
-        except Exception:
-            pass
+        self.signals.status_changed.emit(new_status)
+        self.signals.tray_tooltip_changed.emit(self._compose_tray_title(new_status))
 
-    def action_show(self, icon, item=None) -> None:
-        self.ui.show()
-        self.ui.set_status_text(self.current_status)
-        self.ui.ensure_smb_connected()
-        self.ui.reload_configs()
-        self.ui.refresh_async()
-
-    def action_settings(self, icon, item) -> None:
-        self.ui.show_settings()
-
-    def action_toggle(self, icon, item) -> None:
-        with self.lock:
-            status = self.current_status
-
-        if status == "on":
-            self.vpn_off()
-        else:
-            self.vpn_on()
-
-        self.update_icon_status(self.get_status())
-
-    def action_on(self, icon, item) -> None:
-        self.vpn_on()
-        self.update_icon_status(self.get_status())
-
-    def action_off(self, icon, item) -> None:
-        self.vpn_off()
-        self.update_icon_status(self.get_status())
-
-    def action_restart(self, icon, item) -> None:
-        self.vpn_restart()
-        self.update_icon_status(self.get_status())
-
-    def action_check(self, icon, item) -> None:
-        self.update_icon_status(self.get_status())
-
-    def action_exit(self, icon, item) -> None:
-        self.stop_event.set()
-        try:
-            self.ssh.close()
-        except Exception:
-            pass
-        try:
-            icon.stop()
-        except Exception:
-            pass
-        try:
-            self.ui.root.after(0, self.ui.root.quit)
-        except Exception:
-            pass
+    def update_icon_status(self, new_status: str) -> None:
+        self.signals.tray_status_changed.emit(new_status)
 
     def _startup_command(self) -> str:
         if getattr(sys, "frozen", False):
@@ -323,9 +369,7 @@ RAM:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
                 value, _ = winreg.QueryValueEx(key, self.STARTUP_VALUE_NAME)
                 return bool(str(value).strip())
-        except FileNotFoundError:
-            return False
-        except OSError:
+        except (FileNotFoundError, OSError):
             return False
 
     def set_startup_enabled(self, enabled: bool) -> None:
@@ -343,10 +387,86 @@ RAM:
                 except FileNotFoundError:
                     pass
 
+    def reload_configs(self) -> None:
+        self.ensure_smb_connected()
+        items: list[str] = []
+        try:
+            if not os.path.isdir(XRAY_CONFIG_DIR):
+                items = [f"[нет доступа] {XRAY_CONFIG_DIR}"]
+            else:
+                files = [f for f in os.listdir(XRAY_CONFIG_DIR) if f.lower().endswith(".json")]
+                files.sort(key=str.lower)
+                items = files or ["[пусто]"]
+        except Exception as exc:
+            items = [f"[ошибка] {exc}"]
+        self.signals.configs_changed.emit(items)
+
+    def refresh_async(self) -> None:
+        def worker() -> None:
+            self.signals.busy_changed.emit(True)
+            try:
+                stats = self.get_router_stats()
+                status = self.get_status()
+                checks = self.get_connectivity_checks()
+                self.signals.connection_changed.emit(True)
+                self.signals.stats_changed.emit(stats)
+                self.signals.status_changed.emit(status)
+                self.signals.checks_changed.emit(checks)
+                self.update_icon_status(status)
+                self.reload_configs()
+            except Exception as exc:
+                self.signals.connection_changed.emit(False)
+                self.signals.error_occurred.emit("Ошибка обновления", str(exc))
+            finally:
+                self.signals.busy_changed.emit(False)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_vpn_action_async(self, action, action_name: str) -> None:
+        def worker() -> None:
+            self.signals.busy_changed.emit(True)
+            try:
+                action()
+                self.refresh_async()
+            except Exception as exc:
+                self.signals.error_occurred.emit("Ошибка", f"{action_name} не выполнен:\n{exc}")
+                self.signals.busy_changed.emit(False)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def action_show(self) -> None:
+        self.window.show_main()
+        self.refresh_async()
+
+    def action_settings(self) -> None:
+        self.window.show_settings()
+
+    def action_on(self) -> None:
+        self.run_vpn_action_async(self.vpn_on, "Запуск xkeen")
+
+    def action_off(self) -> None:
+        self.run_vpn_action_async(self.vpn_off, "Остановка xkeen")
+
+    def action_restart(self) -> None:
+        self.run_vpn_action_async(self.vpn_restart, "Перезапуск xkeen")
+
+    def action_check(self) -> None:
+        self.refresh_async()
+
+    def action_exit(self) -> None:
+        self.stop_event.set()
+        try:
+            self.ssh.close()
+        except Exception:
+            pass
+        self.tray.hide()
+        self.qt_app.quit()
+
     def poll_status_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                self.update_icon_status(self.get_status())
+                status = self.get_status()
+                self.update_icon_status(status)
             except Exception:
                 self.update_icon_status("unknown")
 
@@ -358,30 +478,12 @@ RAM:
     def run(self) -> None:
         initial_status = self.get_status()
         self.current_status = initial_status
+        self.update_icon_status(initial_status)
+        self.reload_configs()
+        self.tray.show()
 
-        menu = pystray.Menu(
-            pystray.MenuItem("Показать информацию", self.action_show, default=True),
-            pystray.MenuItem("Настройки", self.action_settings),
-            pystray.MenuItem("Переключить VPN", self.action_toggle),
-            pystray.MenuItem("Включить VPN", self.action_on),
-            pystray.MenuItem("Выключить VPN", self.action_off),
-            pystray.MenuItem("Перезапустить VPN", self.action_restart),
-            pystray.MenuItem("Проверить статус", self.action_check),
-            pystray.MenuItem("Выход", self.action_exit),
-        )
+        poll_thread = threading.Thread(target=self.poll_status_loop, daemon=True)
+        poll_thread.start()
 
-        if initial_status == "on":
-            start_icon = self.icon_on
-        elif initial_status == "off":
-            start_icon = self.icon_off
-        else:
-            start_icon = self.icon_unknown
-        title = self._compose_tray_title(initial_status)
-
-        self.icon = pystray.Icon("xkeen_control", start_icon, title, menu)
-
-        thread = threading.Thread(target=self.poll_status_loop, daemon=True)
-        thread.start()
-
-        self.icon.run_detached()
-        self.ui.root.mainloop()
+        QTimer.singleShot(0, self.refresh_async)
+        sys.exit(self.qt_app.exec())

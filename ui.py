@@ -1,653 +1,532 @@
 import os
-import subprocess
-import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
-import tkinter as tk
-from tkinter import messagebox, ttk
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QTextOption
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileIconProvider,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QPlainTextEdit,
+    QStyle,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
 
-from config import APP_ICON_ICO, SMB_HOST, SMB_PASS, SMB_USER, XRAY_CONFIG_DIR, format_host
+from config import XRAY_CONFIG_DIR, format_host
 from models import ConnectivityCheck, RouterStats
 
 if TYPE_CHECKING:
     from app import VPNTrayApp
 
 
-class StatsWindow:
+class InfoCard(QFrame):
+    def __init__(self, title: str, accent: str = "#176b87", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("InfoCard")
+        self.accent = accent
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
+
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("CardTitle")
+        layout.addWidget(self.title_label)
+
+        self.value_label = QLabel("...")
+        self.value_label.setObjectName("CardValue")
+        self.value_label.setWordWrap(True)
+        self.value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.value_label)
+
+        self.hint_label = QLabel("Ожидание данных")
+        self.hint_label.setObjectName("CardHint")
+        self.hint_label.setWordWrap(True)
+        layout.addWidget(self.hint_label)
+
+        layout.addStretch(1)
+
+    def set_content(self, value: str, hint: str) -> None:
+        self.value_label.setText(value)
+        self.hint_label.setText(hint)
+
+    def set_badge(self, value: str, fg: str, bg: str, hint: str) -> None:
+        self.value_label.setText(value)
+        self.value_label.setStyleSheet(
+            f"color: {fg}; background: {bg}; border-radius: 12px; padding: 10px 14px; font: 700 17px 'Segoe UI';"
+        )
+        self.hint_label.setText(hint)
+
+    def clear_badge_style(self) -> None:
+        self.value_label.setStyleSheet("")
+
+
+class RouteCard(QFrame):
+    def __init__(self, check: ConnectivityCheck, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("RouteCard")
+
+        ok = check.ok
+        tone_fg = "#1f7a4c" if ok else "#b44335"
+        tone_bg = "#d9f2e4" if ok else "#f9ddd8"
+        status_text = "OK"
+        if ok and check.status_code is not None:
+            status_text += f" [{check.status_code}]"
+        if ok and check.latency_ms is not None:
+            status_text += f"  {check.latency_ms} мс"
+        if not ok:
+            status_text = check.error or "Нет доступа"
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        text_box = QVBoxLayout()
+        text_box.setSpacing(4)
+
+        name = QLabel(check.name)
+        name.setObjectName("RouteTitle")
+        text_box.addWidget(name)
+
+        details = QLabel(f"{format_host(check.url)}  |  {check.expected}")
+        details.setObjectName("RouteHint")
+        details.setWordWrap(True)
+        text_box.addWidget(details)
+
+        layout.addLayout(text_box, 1)
+
+        badge = QLabel(status_text)
+        badge.setStyleSheet(
+            f"color: {tone_fg}; background: {tone_bg}; border-radius: 10px; padding: 8px 12px; font: 700 11pt 'Segoe UI';"
+        )
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setWordWrap(True)
+        badge.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        layout.addWidget(badge, 0, Qt.AlignTop)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, app: "VPNTrayApp", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.app = app
+        self.setWindowTitle("Настройки")
+        self.setModal(True)
+        self.resize(520, 240)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("Настройки xKeen Control")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        self.startup_checkbox = QCheckBox("Запускать приложение вместе с Windows")
+        self.startup_checkbox.setChecked(self.app.is_startup_enabled())
+        layout.addWidget(self.startup_checkbox)
+
+        editor_path = self.app.get_notepadpp_path() or "Notepad++ не найден, будет использовано системное приложение"
+        editor_label = QLabel(f"Редактор: {editor_path}")
+        editor_label.setWordWrap(True)
+        editor_label.setObjectName("MutedLabel")
+        layout.addWidget(editor_label)
+
+        layout.addStretch(1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def save(self) -> None:
+        try:
+            self.app.set_startup_enabled(self.startup_checkbox.isChecked())
+            QMessageBox.information(self, "Настройки", "Сохранено.")
+            self.accept()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить настройки:\n{exc}")
+
+
+class MainWindow(QMainWindow):
     BG = "#f4efe6"
     PANEL = "#fbf7f0"
     PANEL_ALT = "#efe6d5"
-    INK = "#1f2937"
-    MUTED = "#6b7280"
-    BORDER = "#d8cbb4"
-    ACCENT = "#176b87"
-    ACCENT_SOFT = "#d8edf5"
-    SUCCESS = "#1f7a4c"
-    SUCCESS_SOFT = "#d9f2e4"
-    DANGER = "#b44335"
-    DANGER_SOFT = "#f9ddd8"
-    WARN = "#9a6700"
-    WARN_SOFT = "#f3e7c6"
-    MONO_BG = "#1e293b"
-    MONO_FG = "#e5edf7"
 
     def __init__(self, app: "VPNTrayApp"):
+        super().__init__()
         self.app = app
-        self.root = tk.Tk()
-        self.root.title("xKeen Control")
-        self.root.geometry("1220x780")
-        self.root.minsize(1080, 700)
-        self.root.configure(bg=self.BG)
+        self.setWindowTitle("xKeen Control")
+        self.resize(1280, 820)
+        self.setMinimumSize(1120, 720)
 
-        if os.path.isfile(APP_ICON_ICO):
-            try:
-                self.root.iconbitmap(APP_ICON_ICO)
-            except Exception:
-                pass
-
-        self.root.protocol("WM_DELETE_WINDOW", self.hide)
-        self.root.withdraw()
-
-        self.settings_window: Optional[tk.Toplevel] = None
-        self.startup_var: Optional[tk.BooleanVar] = None
-        self._auto_refresh_job: Optional[str] = None
-
-        self._configure_styles()
+        self._apply_styles()
         self._build_ui()
-        self._update_editor_info()
+        self._setup_tray()
+        self._update_editor_title()
 
-    def _configure_styles(self) -> None:
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        style.configure(
-            "Card.TFrame",
-            background=self.PANEL,
-            relief="flat",
-            borderwidth=0,
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget {
+                background: #f4efe6;
+                color: #1f2937;
+                font: 10pt 'Segoe UI';
+            }
+            QFrame#Panel, QFrame#InfoCard, QFrame#RouteCard {
+                background: #fbf7f0;
+                border: 1px solid #d8cbb4;
+                border-radius: 18px;
+            }
+            QLabel#HeroTitle {
+                font: 700 24pt 'Segoe UI';
+                color: #1f2937;
+            }
+            QLabel#HeroSubtitle {
+                font: 10pt 'Segoe UI';
+                color: #6b7280;
+            }
+            QLabel#SectionTitle {
+                font: 700 15pt 'Segoe UI';
+                color: #1f2937;
+            }
+            QLabel#CardTitle {
+                font: 10pt 'Segoe UI';
+                color: #6b7280;
+            }
+            QLabel#CardValue {
+                font: 700 16pt 'Segoe UI';
+                color: #1f2937;
+            }
+            QLabel#CardHint, QLabel#MutedLabel, QLabel#RouteHint {
+                font: 9pt 'Segoe UI';
+                color: #6b7280;
+            }
+            QLabel#RouteTitle {
+                font: 700 11pt 'Segoe UI';
+                color: #1f2937;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 12px;
+                padding: 10px 14px;
+                font: 600 10pt 'Segoe UI';
+                background: #d8edf5;
+                color: #176b87;
+            }
+            QPushButton:hover {
+                background: #c8e4ee;
+            }
+            QPushButton:disabled {
+                background: #ebe5d9;
+                color: #998f80;
+            }
+            QPushButton#PrimaryButton {
+                background: #176b87;
+                color: white;
+            }
+            QPushButton#PrimaryButton:hover {
+                background: #12586f;
+            }
+            QListWidget, QPlainTextEdit {
+                background: #fffdfa;
+                border: 1px solid #d8cbb4;
+                border-radius: 14px;
+                padding: 8px;
+            }
+            QListWidget::item {
+                padding: 8px 10px;
+                border-radius: 8px;
+            }
+            QListWidget::item:selected {
+                background: #176b87;
+                color: white;
+            }
+            QPlainTextEdit {
+                background: #1e293b;
+                color: #e5edf7;
+                font: 10.5pt 'Consolas';
+            }
+            """
         )
-        style.configure(
-            "PanelAlt.TFrame",
-            background=self.PANEL_ALT,
-            relief="flat",
-            borderwidth=0,
-        )
-        style.configure(
-            "Primary.TButton",
-            font=("Bahnschrift SemiBold", 10),
-            padding=(16, 10),
-        )
-        style.configure(
-            "Secondary.TButton",
-            font=("Bahnschrift SemiBold", 10),
-            padding=(14, 10),
-        )
-        style.configure(
-            "Ghost.TButton",
-            font=("Bahnschrift", 10),
-            padding=(14, 10),
-        )
-
-    def _create_card(self, parent: tk.Widget, bg: str, padx: int = 18, pady: int = 18) -> tk.Frame:
-        outer = tk.Frame(parent, bg=self.BORDER, bd=0, highlightthickness=0)
-        inner = tk.Frame(outer, bg=bg, bd=0, highlightthickness=0)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-        inner.configure(padx=padx, pady=pady)
-        return outer
-
-    def start_auto_refresh(self) -> None:
-        if self._auto_refresh_job:
-            self.root.after_cancel(self._auto_refresh_job)
-        self._auto_refresh()
-
-    def _auto_refresh(self) -> None:
-        if not self.root.winfo_viewable():
-            self._auto_refresh_job = None
-            return
-        self.refresh_async()
-        self._auto_refresh_job = self.root.after(10000, self._auto_refresh)
-
-    def ensure_smb_connected(self) -> None:
-        try:
-            subprocess.run(
-                ["net", "use", SMB_HOST, f"/user:{SMB_USER}", SMB_PASS],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
 
     def _build_ui(self) -> None:
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        central = QWidget()
+        self.setCentralWidget(central)
 
-        header_wrap = tk.Frame(self.root, bg=self.BG, padx=20, pady=20)
-        header_wrap.grid(row=0, column=0, sticky="ew")
-        header_wrap.columnconfigure(0, weight=1)
-        header_wrap.columnconfigure(1, weight=1)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(16)
 
-        header = self._create_card(header_wrap, self.PANEL_ALT, padx=22, pady=20)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        header.columnconfigure(1, weight=0)
-        header_inner = header.winfo_children()[0]
-        header_inner.columnconfigure(0, weight=1)
-        header_inner.columnconfigure(1, weight=0)
+        hero = QFrame()
+        hero.setObjectName("Panel")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(22, 20, 22, 20)
 
-        title_block = tk.Frame(header_inner, bg=self.PANEL_ALT)
-        title_block.grid(row=0, column=0, sticky="w")
+        title_box = QVBoxLayout()
+        title = QLabel("xKeen Control")
+        title.setObjectName("HeroTitle")
+        subtitle = QLabel("Управление сервисом xkeen на роутере Keenetic")
+        subtitle.setObjectName("HeroSubtitle")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        hero_layout.addLayout(title_box, 1)
 
-        tk.Label(
-            title_block,
-            text="xKeen Control",
-            bg=self.PANEL_ALT,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 24),
-        ).pack(anchor="w")
-        tk.Label(
-            title_block,
-            text="Keenetic, маршруты и конфиги",
-            bg=self.PANEL_ALT,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(4, 0))
+        hero_actions = QHBoxLayout()
+        self.refresh_button = QPushButton("Обновить")
+        self.refresh_button.setObjectName("PrimaryButton")
+        self.refresh_button.clicked.connect(self.app.refresh_async)
+        hero_actions.addWidget(self.refresh_button)
 
-        header_actions = tk.Frame(header_inner, bg=self.PANEL_ALT)
-        header_actions.grid(row=0, column=1, sticky="e")
+        self.settings_button = QPushButton("Настройки")
+        self.settings_button.clicked.connect(self.show_settings)
+        hero_actions.addWidget(self.settings_button)
+        hero_layout.addLayout(hero_actions)
 
-        self.btn_refresh = ttk.Button(header_actions, text="Обновить", command=self.refresh_async, style="Primary.TButton")
-        self.btn_refresh.grid(row=0, column=0, padx=(0, 8))
+        root.addWidget(hero)
 
-        self.btn_settings = ttk.Button(header_actions, text="Настройки", command=self.show_settings, style="Ghost.TButton")
-        self.btn_settings.grid(row=0, column=1)
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        root.addLayout(body, 1)
 
-        content = tk.Frame(self.root, bg=self.BG, padx=20, pady=0)
-        content.grid(row=1, column=0, sticky="nsew", pady=(0, 20))
-        content.columnconfigure(0, weight=7)
-        content.columnconfigure(1, weight=5)
-        content.rowconfigure(0, weight=1)
+        left = QVBoxLayout()
+        left.setSpacing(16)
+        body.addLayout(left, 7)
 
-        left = tk.Frame(content, bg=self.BG)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+        right = QVBoxLayout()
+        right.setSpacing(16)
+        body.addLayout(right, 5)
 
-        right = tk.Frame(content, bg=self.BG)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(1, weight=1)
-        right.rowconfigure(3, weight=1)
+        metrics_panel = QFrame()
+        metrics_panel.setObjectName("Panel")
+        metrics_layout = QGridLayout(metrics_panel)
+        metrics_layout.setContentsMargins(18, 18, 18, 18)
+        metrics_layout.setHorizontalSpacing(12)
+        metrics_layout.setVerticalSpacing(12)
 
-        cards_row = tk.Frame(left, bg=self.BG)
-        cards_row.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-        for index in range(3):
-            cards_row.columnconfigure(index, weight=1)
-        for index in range(2):
-            cards_row.rowconfigure(index, weight=1)
+        self.status_card = InfoCard("Состояние xkeen")
+        self.uptime_card = InfoCard("Аптайм")
+        self.load_card = InfoCard("Средняя нагрузка")
+        self.cpu_card = InfoCard("Нагрузка xkeen")
+        self.memory_card = InfoCard("RAM")
 
-        status_card = self._create_card(cards_row, self.PANEL, padx=20, pady=18)
-        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
-        status_inner = status_card.winfo_children()[0]
-        status_inner.columnconfigure(0, weight=1)
+        metrics_layout.addWidget(self.status_card, 0, 0)
+        metrics_layout.addWidget(self.uptime_card, 0, 1)
+        metrics_layout.addWidget(self.load_card, 0, 2)
+        metrics_layout.addWidget(self.cpu_card, 1, 0)
+        metrics_layout.addWidget(self.memory_card, 1, 1, 1, 2)
 
-        tk.Label(
-            status_inner,
-            text="Состояние VPN",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).grid(row=0, column=0, sticky="w")
+        left.addWidget(metrics_panel)
 
-        self.status_badge = tk.Label(
-            status_inner,
-            text="НЕИЗВЕСТНО",
-            bg=self.WARN_SOFT,
-            fg=self.WARN,
-            font=("Bahnschrift SemiBold", 18),
-            padx=14,
-            pady=8,
-        )
-        self.status_badge.grid(row=1, column=0, sticky="w", pady=(10, 8))
+        actions_panel = QFrame()
+        actions_panel.setObjectName("Panel")
+        actions_layout = QVBoxLayout(actions_panel)
+        actions_layout.setContentsMargins(18, 18, 18, 18)
+        actions_layout.setSpacing(12)
 
-        self.status_hint = tk.Label(
-            status_inner,
-            text="Ожидаем данные от роутера",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 9),
-            wraplength=190,
-            justify="left",
-        )
-        self.status_hint.grid(row=2, column=0, sticky="w")
+        actions_title = QLabel("Быстрые действия")
+        actions_title.setObjectName("SectionTitle")
+        actions_layout.addWidget(actions_title)
 
-        self.uptime_value, self.uptime_hint = self._build_metric_card(cards_row, 0, 1, "Аптайм", padx=(0, 10), pady=(0, 10), wraplength=220)
-        self.load_value, self.load_hint = self._build_metric_card(cards_row, 0, 2, "Средняя нагрузка", pady=(0, 10), wraplength=220)
-        self.cpu_value, self.cpu_hint = self._build_metric_card(cards_row, 1, 0, "Нагрузка xray", padx=(0, 10), wraplength=220)
-        self.memory_value, self.memory_hint = self._build_metric_card(cards_row, 1, 1, "RAM", columnspan=2, wraplength=460)
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(10)
 
-        actions_card = self._create_card(left, self.PANEL, padx=20, pady=18)
-        actions_card.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-        actions_inner = actions_card.winfo_children()[0]
-        for index in range(3):
-            actions_inner.columnconfigure(index, weight=1)
+        self.on_button = QPushButton("Включить")
+        self.on_button.setObjectName("PrimaryButton")
+        self.on_button.clicked.connect(self.app.action_on)
+        buttons_row.addWidget(self.on_button)
 
-        tk.Label(
-            actions_inner,
-            text="Быстрые действия",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 14),
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        self.off_button = QPushButton("Выключить")
+        self.off_button.clicked.connect(self.app.action_off)
+        buttons_row.addWidget(self.off_button)
 
-        tk.Label(
-            actions_inner,
-            text="Запуск, остановка и мягкий рестарт сервиса на роутере",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 14))
+        self.restart_button = QPushButton("Перезапустить")
+        self.restart_button.clicked.connect(self.app.action_restart)
+        buttons_row.addWidget(self.restart_button)
 
-        self.btn_vpn_on = ttk.Button(actions_inner, text="Включить VPN", command=self.vpn_on_async, style="Primary.TButton")
-        self.btn_vpn_on.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        actions_layout.addLayout(buttons_row)
+        left.addWidget(actions_panel)
 
-        self.btn_vpn_off = ttk.Button(actions_inner, text="Выключить VPN", command=self.vpn_off_async, style="Secondary.TButton")
-        self.btn_vpn_off.grid(row=2, column=1, sticky="ew", padx=4)
+        diag_panel = QFrame()
+        diag_panel.setObjectName("Panel")
+        diag_layout = QVBoxLayout(diag_panel)
+        diag_layout.setContentsMargins(18, 18, 18, 18)
+        diag_layout.setSpacing(10)
 
-        self.btn_vpn_restart = ttk.Button(actions_inner, text="Перезапустить", command=self.vpn_restart_async, style="Secondary.TButton")
-        self.btn_vpn_restart.grid(row=2, column=2, sticky="ew", padx=(8, 0))
+        diag_title = QLabel("Диагностика роутера")
+        diag_title.setObjectName("SectionTitle")
+        diag_layout.addWidget(diag_title)
 
-        console_card = self._create_card(left, self.PANEL, padx=0, pady=0)
-        console_card.grid(row=2, column=0, sticky="nsew")
-        console_inner = console_card.winfo_children()[0]
-        console_inner.columnconfigure(0, weight=1)
-        console_inner.rowconfigure(1, weight=1)
+        self.diagnostics_text = QPlainTextEdit()
+        self.diagnostics_text.setReadOnly(True)
+        self.diagnostics_text.setWordWrapMode(QTextOption.NoWrap)
+        diag_layout.addWidget(self.diagnostics_text, 1)
+        left.addWidget(diag_panel, 1)
 
-        console_head = tk.Frame(console_inner, bg=self.PANEL, padx=20, pady=16)
-        console_head.grid(row=0, column=0, sticky="ew")
-        console_head.columnconfigure(0, weight=1)
+        routes_panel = QFrame()
+        routes_panel.setObjectName("Panel")
+        routes_layout = QVBoxLayout(routes_panel)
+        routes_layout.setContentsMargins(18, 18, 18, 18)
+        routes_layout.setSpacing(10)
 
-        tk.Label(
-            console_head,
-            text="Диагностика роутера",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 14),
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            console_head,
-            text="Аптайм, нагрузка xray и оперативная память",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        routes_title = QLabel("Маршруты и доступность")
+        routes_title.setObjectName("SectionTitle")
+        routes_layout.addWidget(routes_title)
 
-        text_wrap = tk.Frame(console_inner, bg=self.MONO_BG, padx=18, pady=18)
-        text_wrap.grid(row=1, column=0, sticky="nsew")
-        text_wrap.columnconfigure(0, weight=1)
-        text_wrap.rowconfigure(0, weight=1)
+        self.routes_container = QVBoxLayout()
+        self.routes_container.setSpacing(10)
+        routes_layout.addLayout(self.routes_container)
+        routes_layout.addStretch(1)
+        right.addWidget(routes_panel)
 
-        self.text = tk.Text(
-            text_wrap,
-            wrap="none",
-            bg=self.MONO_BG,
-            fg=self.MONO_FG,
-            insertbackground=self.MONO_FG,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            font=("Consolas", 11),
-            padx=4,
-            pady=4,
-        )
-        self.text.grid(row=0, column=0, sticky="nsew")
+        configs_panel = QFrame()
+        configs_panel.setObjectName("Panel")
+        configs_layout = QVBoxLayout(configs_panel)
+        configs_layout.setContentsMargins(18, 18, 18, 18)
+        configs_layout.setSpacing(12)
 
-        yscroll = ttk.Scrollbar(text_wrap, orient="vertical", command=self.text.yview)
-        yscroll.grid(row=0, column=1, sticky="ns")
-        self.text.configure(yscrollcommand=yscroll.set)
+        configs_title = QLabel("Конфиги xkeen")
+        configs_title.setObjectName("SectionTitle")
+        configs_layout.addWidget(configs_title)
 
-        checks_card = self._create_card(right, self.PANEL, padx=20, pady=18)
-        checks_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-        checks_inner = checks_card.winfo_children()[0]
-        checks_inner.columnconfigure(0, weight=1)
+        configs_hint = QLabel("Файлы из каталога `/opt/etc/xray/configs`")
+        configs_hint.setObjectName("MutedLabel")
+        configs_layout.addWidget(configs_hint)
 
-        tk.Label(
-            checks_inner,
-            text="Маршруты и доступность",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 14),
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            checks_inner,
-            text="Проверяем прямой трафик, RU-маршрут и NL-маршрут",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.configs_list = QListWidget()
+        self.configs_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.configs_list.itemDoubleClicked.connect(lambda _: self.open_selected_config())
+        configs_layout.addWidget(self.configs_list, 1)
 
-        self.checks_frame = tk.Frame(checks_inner, bg=self.PANEL)
-        self.checks_frame.grid(row=2, column=0, sticky="ew", pady=(16, 0))
-        self.checks_frame.columnconfigure(0, weight=1)
+        cfg_buttons = QHBoxLayout()
+        cfg_buttons.setSpacing(10)
 
-        configs_card = self._create_card(right, self.PANEL, padx=0, pady=0)
-        configs_card.grid(row=1, column=0, sticky="nsew")
-        configs_inner = configs_card.winfo_children()[0]
-        configs_inner.columnconfigure(0, weight=1)
-        configs_inner.rowconfigure(2, weight=1)
+        self.reload_configs_button = QPushButton("Обновить список")
+        self.reload_configs_button.clicked.connect(self.app.reload_configs)
+        cfg_buttons.addWidget(self.reload_configs_button)
 
-        configs_head = tk.Frame(configs_inner, bg=self.PANEL, padx=20, pady=16)
-        configs_head.grid(row=0, column=0, sticky="ew")
-        configs_head.columnconfigure(0, weight=1)
+        self.open_config_button = QPushButton("Открыть в Notepad++")
+        self.open_config_button.setObjectName("PrimaryButton")
+        self.open_config_button.clicked.connect(self.open_selected_config)
+        cfg_buttons.addWidget(self.open_config_button)
 
-        tk.Label(
-            configs_head,
-            text="XRAY configs",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 14),
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            configs_head,
-            text="Файлы из каталога `/opt/etc/xray/configs` через SMB",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self.open_folder_button = QPushButton("Открыть папку")
+        self.open_folder_button.clicked.connect(self.open_config_folder)
+        cfg_buttons.addWidget(self.open_folder_button)
 
-        self.btn_reload_cfg = ttk.Button(configs_head, text="Обновить список", command=self.reload_configs, style="Ghost.TButton")
-        self.btn_reload_cfg.grid(row=0, column=1, rowspan=2, sticky="e")
+        configs_layout.addLayout(cfg_buttons)
+        right.addWidget(configs_panel, 1)
 
-        list_wrap = tk.Frame(configs_inner, bg=self.PANEL, padx=20, pady=0)
-        list_wrap.grid(row=2, column=0, sticky="nsew", pady=(0, 16))
-        list_wrap.columnconfigure(0, weight=1)
-        list_wrap.rowconfigure(0, weight=1)
+    def _setup_tray(self) -> None:
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setToolTip("xKeen Control")
 
-        self.cfg_list = tk.Listbox(
-            list_wrap,
-            bg="#fffdfa",
-            fg=self.INK,
-            selectbackground=self.ACCENT,
-            selectforeground="white",
-            relief="flat",
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-            font=("Segoe UI", 11),
-            activestyle="none",
-        )
-        self.cfg_list.grid(row=0, column=0, sticky="nsew")
-        self.cfg_list.bind("<Double-Button-1>", lambda _event: self.open_selected_config())
+    def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_main()
 
-        cfg_scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.cfg_list.yview)
-        cfg_scroll.grid(row=0, column=1, sticky="ns")
-        self.cfg_list.configure(yscrollcommand=cfg_scroll.set)
+    def _update_editor_title(self) -> None:
+        editor_name = "Notepad++" if self.app.get_notepadpp_path() else "системный редактор"
+        self.setWindowTitle(f"xKeen Control [{editor_name}]")
 
-        cfg_btns = tk.Frame(configs_inner, bg=self.PANEL, padx=20, pady=0)
-        cfg_btns.grid(row=3, column=0, sticky="ew", pady=(0, 20))
-        cfg_btns.columnconfigure(0, weight=1)
-        cfg_btns.columnconfigure(1, weight=1)
+    def show_main(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
-        self.btn_open_cfg = ttk.Button(cfg_btns, text="Открыть в Notepad++", command=self.open_selected_config, style="Primary.TButton")
-        self.btn_open_cfg.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    def show_settings(self) -> None:
+        dialog = SettingsDialog(self.app, self)
+        dialog.exec()
 
-        self.btn_open_folder = ttk.Button(cfg_btns, text="Открыть папку", command=self.open_config_folder, style="Secondary.TButton")
-        self.btn_open_folder.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+        self.hide()
 
-    def _update_editor_info(self) -> None:
-        editor_path = self.app.get_notepadpp_path()
-        if editor_path:
-            editor_name = "Notepad++"
-        else:
-            editor_name = "Системный редактор"
-        self.root.title(f"xKeen Control [{editor_name}]")
+    def show_error(self, title: str, message: str) -> None:
+        QMessageBox.critical(self, title, message)
 
-    def _build_metric_card(
-        self,
-        parent: tk.Widget,
-        row: int,
-        column: int,
-        title: str,
-        padx: tuple[int, int] = (0, 0),
-        pady: tuple[int, int] = (0, 0),
-        columnspan: int = 1,
-        wraplength: int = 180,
-    ) -> tuple[tk.Label, tk.Label]:
-        card = self._create_card(parent, self.PANEL, padx=18, pady=18)
-        card.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=padx, pady=pady)
-        inner = card.winfo_children()[0]
-
-        tk.Label(
-            inner,
-            text=title,
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).pack(anchor="w")
-        value = tk.Label(
-            inner,
-            text="...",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 14),
-            justify="left",
-            wraplength=wraplength,
-        )
-        value.pack(anchor="w", pady=(10, 6))
-        hint = tk.Label(
-            inner,
-            text="Ожидание данных",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 9),
-            justify="left",
-            wraplength=wraplength,
-        )
-        hint.pack(anchor="w")
-        return value, hint
-
-    def update_stats_cards(self, stats: RouterStats) -> None:
-        self.uptime_value.config(text=stats.uptime)
-        self.uptime_hint.config(text="Время работы")
-
-        self.load_value.config(text=stats.load_average)
-        self.load_hint.config(text="Средняя нагрузка")
-
-        self.cpu_value.config(text=stats.xray_cpu)
-        self.cpu_hint.config(text="CPU процесса")
-
-        self.memory_value.config(text=stats.memory)
-        self.memory_hint.config(text="использовано / всего / свободно")
-
-    def _add_check_card(self, parent: tk.Widget, check: ConnectivityCheck) -> None:
-        if check.ok:
-            tone_bg = self.SUCCESS_SOFT
-            tone_fg = self.SUCCESS
-            state_text = "OK"
-            if check.status_code is not None:
-                state_text += f" [{check.status_code}]"
-            if check.latency_ms is not None:
-                state_text += f"  {check.latency_ms} ms"
-        else:
-            tone_bg = self.DANGER_SOFT
-            tone_fg = self.DANGER
-            state_text = check.error or "Нет доступа"
-
-        row = tk.Frame(parent, bg=self.PANEL)
-        row.pack(fill="x", pady=(0, 10))
-        row.columnconfigure(0, weight=1)
-        row.columnconfigure(1, weight=0)
-
-        info = tk.Frame(row, bg=self.PANEL)
-        info.grid(row=0, column=0, sticky="w")
-
-        tk.Label(
-            info,
-            text=check.name,
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 12),
-        ).pack(anchor="w")
-        tk.Label(
-            info,
-            text=f"{format_host(check.url)}  |  {check.expected}",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(2, 0))
-
-        tk.Label(
-            row,
-            text=state_text,
-            bg=tone_bg,
-            fg=tone_fg,
-            font=("Bahnschrift SemiBold", 11),
-            padx=12,
-            pady=8,
-        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
-
-    def show(self) -> None:
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        self.start_auto_refresh()
-
-    def hide(self) -> None:
-        if self._auto_refresh_job:
-            self.root.after_cancel(self._auto_refresh_job)
-            self._auto_refresh_job = None
-        self.root.withdraw()
+    def set_busy(self, busy: bool) -> None:
+        for button in (
+            self.refresh_button,
+            self.settings_button,
+            self.on_button,
+            self.off_button,
+            self.restart_button,
+            self.reload_configs_button,
+            self.open_config_button,
+            self.open_folder_button,
+        ):
+            button.setDisabled(busy)
 
     def set_connection_state(self, ok: bool) -> None:
         if ok:
-            self.status_hint.config(text="Данные обновлены")
+            self.status_card.hint_label.setText("Данные обновлены")
         else:
-            self.status_hint.config(text="Ошибка SSH")
+            self.status_card.hint_label.setText("Ошибка SSH")
 
     def set_status_text(self, status: str) -> None:
         if status == "on":
-            badge_text = "ВКЛЮЧЕН"
-            badge_bg = self.SUCCESS_SOFT
-            badge_fg = self.SUCCESS
-            hint = "Маршруты активны"
+            self.status_card.set_badge("ВКЛЮЧЕН", "#1f7a4c", "#d9f2e4", "Маршруты активны")
         elif status == "off":
-            badge_text = "ВЫКЛЮЧЕН"
-            badge_bg = self.DANGER_SOFT
-            badge_fg = self.DANGER
-            hint = "xkeen остановлен"
+            self.status_card.set_badge("ВЫКЛЮЧЕН", "#b44335", "#f9ddd8", "xkeen остановлен")
         else:
-            badge_text = "НЕИЗВЕСТНО"
-            badge_bg = self.WARN_SOFT
-            badge_fg = self.WARN
-            hint = "Нет данных"
+            self.status_card.set_badge("НЕИЗВЕСТНО", "#9a6700", "#f3e7c6", "Нет данных")
 
-        self.status_badge.config(text=badge_text, bg=badge_bg, fg=badge_fg)
-        self.status_hint.config(text=hint)
+    def update_stats_cards(self, stats: RouterStats) -> None:
+        self.uptime_card.clear_badge_style()
+        self.load_card.clear_badge_style()
+        self.cpu_card.clear_badge_style()
+        self.memory_card.clear_badge_style()
 
-    def set_text(self, text: str) -> None:
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", text)
-
-    def set_busy(self, busy: bool) -> None:
-        state = "disabled" if busy else "normal"
-        for button in (
-            self.btn_refresh,
-            self.btn_vpn_on,
-            self.btn_vpn_off,
-            self.btn_vpn_restart,
-            self.btn_settings,
-            self.btn_reload_cfg,
-            self.btn_open_cfg,
-            self.btn_open_folder,
-        ):
-            button.config(state=state)
+        self.uptime_card.set_content(stats.uptime, "Время работы роутера")
+        self.load_card.set_content(stats.load_average, "Средняя нагрузка")
+        self.cpu_card.set_content(stats.xray_cpu, "CPU процесса xkeen")
+        self.memory_card.set_content(stats.memory, "Использовано / всего / свободно")
+        self.diagnostics_text.setPlainText(stats.text)
 
     def update_connectivity_checks(self, checks: list[ConnectivityCheck]) -> None:
-        for child in self.checks_frame.winfo_children():
-            child.destroy()
+        while self.routes_container.count():
+            item = self.routes_container.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
         if not checks:
-            tk.Label(
-                self.checks_frame,
-                text="Нет данных по маршрутам",
-                bg=self.PANEL,
-                fg=self.MUTED,
-                font=("Segoe UI", 10),
-            ).pack(anchor="w")
+            self.routes_container.addWidget(QLabel("Нет данных по маршрутам"))
             return
 
         for check in checks:
-            self._add_check_card(self.checks_frame, check)
+            self.routes_container.addWidget(RouteCard(check))
 
-    def refresh_async(self) -> None:
-        def worker() -> None:
-            try:
-                self.root.after(0, lambda: self.set_busy(True))
-                stats = self.app.get_router_stats()
-                status = self.app.get_status()
-                checks = self.app.get_connectivity_checks()
-                self.root.after(0, lambda: self.set_status_text(status))
-                self.root.after(0, lambda: self.set_connection_state(True))
-                self.root.after(0, lambda: self.update_stats_cards(stats))
-                self.root.after(0, lambda: self.set_text(stats.text))
-                self.root.after(0, lambda: self.update_connectivity_checks(checks))
-            except Exception as e:
-                self.root.after(0, lambda: self.set_connection_state(False))
-                self.root.after(0, lambda: self.set_text(f"Ошибка обновления:\n{e}"))
-            finally:
-                self.root.after(0, lambda: self.set_busy(False))
+    def update_configs(self, items: list[str]) -> None:
+        self.configs_list.clear()
+        icon_provider = QFileIconProvider()
+        for item in items:
+            list_item = QListWidgetItem(item)
+            if not item.startswith("["):
+                list_item.setIcon(icon_provider.icon(QFileIconProvider.File))
+            self.configs_list.addItem(list_item)
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _run_vpn_action(self, action, action_name: str) -> None:
-        def worker() -> None:
-            try:
-                self.root.after(0, lambda: self.set_busy(True))
-                action()
-                status = self.app.get_status()
-                self.app.update_icon_status(status)
-                self.root.after(0, lambda: self.set_status_text(status))
-                self.root.after(0, self.refresh_async)
-            except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Ошибка", f"{action_name} не выполнен:\n{e}"))
-            finally:
-                self.root.after(0, lambda: self.set_busy(False))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def vpn_on_async(self) -> None:
-        self._run_vpn_action(self.app.vpn_on, "Запуск VPN")
-
-    def vpn_off_async(self) -> None:
-        self._run_vpn_action(self.app.vpn_off, "Остановка VPN")
-
-    def vpn_restart_async(self) -> None:
-        self._run_vpn_action(self.app.vpn_restart, "Перезапуск VPN")
-
-    def reload_configs(self) -> None:
-        self.cfg_list.delete(0, "end")
-        try:
-            if not os.path.isdir(XRAY_CONFIG_DIR):
-                self.cfg_list.insert("end", f"[нет доступа] {XRAY_CONFIG_DIR}")
-                return
-
-            files = [f for f in os.listdir(XRAY_CONFIG_DIR) if f.lower().endswith(".json")]
-            files.sort(key=str.lower)
-            for file_name in files:
-                self.cfg_list.insert("end", file_name)
-
-            if not files:
-                self.cfg_list.insert("end", "[пусто]")
-        except Exception as e:
-            self.cfg_list.insert("end", f"[ошибка] {e}")
-
-    def _get_selected_config_path(self) -> Optional[str]:
-        selected = self.cfg_list.curselection()
-        if not selected:
+    def _get_selected_config_path(self) -> str | None:
+        item = self.configs_list.currentItem()
+        if not item:
             return None
-        name = self.cfg_list.get(selected[0])
+        name = item.text()
         if name.startswith("["):
             return None
         return os.path.join(XRAY_CONFIG_DIR, name)
@@ -656,94 +535,13 @@ class StatsWindow:
         path = self._get_selected_config_path()
         if not path:
             return
-
         try:
             self.app.run_config_editor(path)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось открыть файл:\n{e}")
+        except Exception as exc:
+            self.show_error("Ошибка", f"Не удалось открыть файл:\n{exc}")
 
     def open_config_folder(self) -> None:
         try:
             os.startfile(XRAY_CONFIG_DIR)
-        except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
-
-    def show_settings(self) -> None:
-        if self.settings_window and self.settings_window.winfo_exists():
-            self.settings_window.lift()
-            self.settings_window.focus_force()
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("Настройки")
-        win.geometry("500x280")
-        win.resizable(False, False)
-        win.transient(self.root)
-        win.grab_set()
-        win.configure(bg=self.BG)
-        self.settings_window = win
-
-        card = self._create_card(win, self.PANEL, padx=20, pady=18)
-        card.pack(fill="both", expand=True, padx=18, pady=18)
-        frame = card.winfo_children()[0]
-
-        tk.Label(
-            frame,
-            text="Настройки приложения",
-            bg=self.PANEL,
-            fg=self.INK,
-            font=("Bahnschrift SemiBold", 16),
-        ).pack(anchor="w")
-        tk.Label(
-            frame,
-            text="Параметры запуска и текущий редактор конфигов",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(4, 18))
-
-        startup_enabled = self.app.is_startup_enabled()
-        self.startup_var = tk.BooleanVar(value=startup_enabled)
-
-        chk = tk.Checkbutton(
-            frame,
-            text="Запускать приложение вместе с Windows",
-            variable=self.startup_var,
-            bg=self.PANEL,
-            fg=self.INK,
-            activebackground=self.PANEL,
-            activeforeground=self.INK,
-            selectcolor=self.PANEL,
-            font=("Segoe UI", 10),
-        )
-        chk.pack(anchor="w", pady=(0, 14))
-
-        editor_path = self.app.get_notepadpp_path() or "Notepad++ не найден, будет использовано системное приложение"
-        tk.Label(
-            frame,
-            text=f"Редактор: {editor_path}",
-            bg=self.PANEL,
-            fg=self.MUTED,
-            wraplength=420,
-            justify="left",
-            font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(0, 18))
-
-        btns = tk.Frame(frame, bg=self.PANEL)
-        btns.pack(fill="x", side="bottom")
-        btns.columnconfigure(0, weight=1)
-
-        ttk.Button(btns, text="Отмена", command=win.destroy, style="Ghost.TButton").grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(btns, text="Сохранить", command=self.save_settings, style="Primary.TButton").grid(row=0, column=2)
-
-    def save_settings(self) -> None:
-        if self.startup_var is None:
-            return
-
-        try:
-            self.app.set_startup_enabled(bool(self.startup_var.get()))
-            messagebox.showinfo("Настройки", "Сохранено.")
-            if self.settings_window and self.settings_window.winfo_exists():
-                self.settings_window.destroy()
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось сохранить настройки:\n{e}")
+        except Exception as exc:
+            self.show_error("Ошибка", str(exc))
