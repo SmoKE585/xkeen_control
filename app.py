@@ -11,8 +11,8 @@ import winreg
 from typing import Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QStyle
+from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QStyle
 
 from config import (
     APP_ICON_ICO,
@@ -25,10 +25,8 @@ from config import (
     ROUTER_PASSWORD,
     ROUTER_PORT,
     ROUTER_USER,
-    SMB_HOST,
-    SMB_PASS,
-    SMB_USER,
     STATUS_POLL_INTERVAL,
+    TEMP_CONFIG_DIR,
     TRAY_ICON_OFF,
     TRAY_ICON_ON,
     TRAY_ICON_UNKNOWN,
@@ -53,6 +51,15 @@ class AppSignals(QObject):
     tray_tooltip_changed = Signal(str)
 
 
+class ConfigEditSession:
+    def __init__(self, remote_path: str, local_path: str, process: subprocess.Popen | None):
+        self.remote_path = remote_path
+        self.local_path = local_path
+        self.process = process
+        self.last_mtime = os.path.getmtime(local_path) if os.path.exists(local_path) else 0.0
+        self.upload_in_progress = False
+
+
 class VPNTrayApp:
     ANSI_RE = re.compile(r"\x1B\[[0-9;]*[A-Za-z]")
     STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -68,6 +75,7 @@ class VPNTrayApp:
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.signals = AppSignals()
+        self.config_sessions: dict[str, ConfigEditSession] = {}
 
         self.ssh = SSHSession(ROUTER_HOST, ROUTER_PORT, ROUTER_USER, ROUTER_PASSWORD)
         self.window = MainWindow(self)
@@ -90,6 +98,12 @@ class VPNTrayApp:
         self.tray.setIcon(self.icon_unknown)
 
         self._setup_tray_menu()
+        os.makedirs(TEMP_CONFIG_DIR, exist_ok=True)
+        self.cleanup_temp_dir()
+
+        self.config_sync_timer = QTimer()
+        self.config_sync_timer.setInterval(1500)
+        self.config_sync_timer.timeout.connect(self.sync_temp_configs)
 
     def _load_window_icon(self) -> QIcon:
         if os.path.isfile(APP_ICON_ICO):
@@ -154,16 +168,6 @@ class VPNTrayApp:
     def _ssh_exec(self, cmd: str) -> str:
         return self.ssh.exec(cmd)
 
-    def ensure_smb_connected(self) -> None:
-        try:
-            subprocess.run(
-                ["net", "use", SMB_HOST, f"/user:{SMB_USER}", SMB_PASS],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-
     def get_status(self) -> str:
         try:
             output = self._ssh_exec(CMD_STATUS)
@@ -199,11 +203,81 @@ class VPNTrayApp:
         return None
 
     def run_config_editor(self, path: str) -> None:
+        remote_path = self._normalize_remote_path(path)
+        local_path = self._local_temp_path(remote_path)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        self.ssh.download_file(remote_path, local_path)
+
         editor = self.get_notepadpp_path()
+        process = None
         if editor:
-            os.spawnl(os.P_NOWAIT, editor, editor, path)
+            process = subprocess.Popen([editor, local_path])
+        else:
+            os.startfile(local_path)
+
+        self.config_sessions[local_path] = ConfigEditSession(remote_path, local_path, process)
+        if not self.config_sync_timer.isActive():
+            self.config_sync_timer.start()
+
+    def _normalize_remote_path(self, path: str) -> str:
+        if path.startswith(XRAY_CONFIG_DIR):
+            return path.replace("\\", "/")
+        return f"{XRAY_CONFIG_DIR.rstrip('/')}/{path.lstrip('/').replace('\\', '/')}"
+
+    def _local_temp_path(self, remote_path: str) -> str:
+        safe_name = remote_path.strip("/").replace("/", "__")
+        return os.path.join(TEMP_CONFIG_DIR, safe_name)
+
+    def sync_temp_configs(self) -> None:
+        if not self.config_sessions:
+            self.config_sync_timer.stop()
             return
-        os.startfile(path)
+
+        to_remove: list[str] = []
+        for local_path, session in list(self.config_sessions.items()):
+            if not os.path.exists(local_path):
+                to_remove.append(local_path)
+                continue
+
+            try:
+                current_mtime = os.path.getmtime(local_path)
+            except OSError:
+                to_remove.append(local_path)
+                continue
+
+            if current_mtime > session.last_mtime and not session.upload_in_progress:
+                session.last_mtime = current_mtime
+                session.upload_in_progress = True
+
+                def uploader(s: ConfigEditSession = session) -> None:
+                    try:
+                        self.ssh.upload_file(s.local_path, s.remote_path)
+                    except Exception as exc:
+                        self.signals.error_occurred.emit("Ошибка загрузки", f"Не удалось загрузить файл на роутер:\n{exc}")
+                    finally:
+                        s.upload_in_progress = False
+
+                threading.Thread(target=uploader, daemon=True).start()
+
+            if session.process is not None and session.process.poll() is not None and not session.upload_in_progress:
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    pass
+                to_remove.append(local_path)
+
+        for local_path in to_remove:
+            self.config_sessions.pop(local_path, None)
+
+    def cleanup_temp_dir(self) -> None:
+        if os.path.isdir(TEMP_CONFIG_DIR):
+            for name in os.listdir(TEMP_CONFIG_DIR):
+                path = os.path.join(TEMP_CONFIG_DIR, name)
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
 
     def get_router_stats(self) -> RouterStats:
         uptime_raw = self.strip_ansi(self._ssh_exec("uptime"))
@@ -388,15 +462,10 @@ RAM:
                     pass
 
     def reload_configs(self) -> None:
-        self.ensure_smb_connected()
         items: list[str] = []
         try:
-            if not os.path.isdir(XRAY_CONFIG_DIR):
-                items = [f"[нет доступа] {XRAY_CONFIG_DIR}"]
-            else:
-                files = [f for f in os.listdir(XRAY_CONFIG_DIR) if f.lower().endswith(".json")]
-                files.sort(key=str.lower)
-                items = files or ["[пусто]"]
+            files = [f for f in self.ssh.listdir(XRAY_CONFIG_DIR) if f.lower().endswith(".json")]
+            items = files or ["[пусто]"]
         except Exception as exc:
             items = [f"[ошибка] {exc}"]
         self.signals.configs_changed.emit(items)
@@ -455,10 +524,12 @@ RAM:
 
     def action_exit(self) -> None:
         self.stop_event.set()
+        self.config_sync_timer.stop()
         try:
             self.ssh.close()
         except Exception:
             pass
+        self.cleanup_temp_dir()
         self.tray.hide()
         self.qt_app.quit()
 
@@ -481,6 +552,7 @@ RAM:
         self.update_icon_status(initial_status)
         self.reload_configs()
         self.tray.show()
+        self.config_sync_timer.start()
 
         poll_thread = threading.Thread(target=self.poll_status_loop, daemon=True)
         poll_thread.start()

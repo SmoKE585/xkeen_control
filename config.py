@@ -8,10 +8,6 @@ TRAY_ICON_ON = os.path.join(ICON_DIR, "tray_on.png")
 TRAY_ICON_OFF = os.path.join(ICON_DIR, "tray_off.png")
 TRAY_ICON_UNKNOWN = os.path.join(ICON_DIR, "tray_unknown.png")
 
-SMB_HOST = r"\\192.168.1.1"
-SMB_USER = "admin"
-SMB_PASS = "change_me"
-
 ROUTER_HOST = "192.168.1.1"
 ROUTER_PORT = 22
 ROUTER_USER = "root"
@@ -22,8 +18,13 @@ CMD_VPN_OFF = "xkeen -stop"
 CMD_STATUS = "xkeen -status"
 
 STATUS_POLL_INTERVAL = 180
-XRAY_CONFIG_DIR = r"\\192.168.1.1\data\etc\xray\configs"
+XRAY_CONFIG_DIR = "/opt/etc/xray/configs"
 VPN_RESTART_DELAY_SEC = 3
+TEMP_CONFIG_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", BASE_DIR),
+    "xKeen Control",
+    "temp_configs",
+)
 
 NOTEPADPP_CANDIDATES = [
     os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Notepad++", "notepad++.exe"),

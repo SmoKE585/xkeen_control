@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import XRAY_CONFIG_DIR, format_host
+from config import TEMP_CONFIG_DIR, XRAY_CONFIG_DIR, format_host
 from models import ConnectivityCheck, RouterStats
 
 if TYPE_CHECKING:
@@ -404,7 +404,7 @@ class MainWindow(QMainWindow):
         configs_title.setObjectName("SectionTitle")
         configs_layout.addWidget(configs_title)
 
-        configs_hint = QLabel("Файлы из каталога `/opt/etc/xray/configs`")
+        configs_hint = QLabel("Файлы читаются по SSH из `/opt/etc/xray/configs`")
         configs_hint.setObjectName("MutedLabel")
         configs_layout.addWidget(configs_hint)
 
@@ -425,7 +425,7 @@ class MainWindow(QMainWindow):
         self.open_config_button.clicked.connect(self.open_selected_config)
         cfg_buttons.addWidget(self.open_config_button)
 
-        self.open_folder_button = QPushButton("Открыть папку")
+        self.open_folder_button = QPushButton("Открыть temp")
         self.open_folder_button.clicked.connect(self.open_config_folder)
         cfg_buttons.addWidget(self.open_folder_button)
 
@@ -542,6 +542,7 @@ class MainWindow(QMainWindow):
 
     def open_config_folder(self) -> None:
         try:
-            os.startfile(XRAY_CONFIG_DIR)
+            os.makedirs(TEMP_CONFIG_DIR, exist_ok=True)
+            os.startfile(TEMP_CONFIG_DIR)
         except Exception as exc:
             self.show_error("Ошибка", str(exc))

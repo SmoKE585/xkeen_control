@@ -74,7 +74,38 @@ class SSHSession:
             except Exception:
                 self.close()
                 self._connect_locked()
+                assert self._client is not None
                 _stdin, stdout, stderr = self._client.exec_command(cmd)
                 out = stdout.read().decode(errors="ignore")
                 err = stderr.read().decode(errors="ignore")
                 return (out + ("\n" + err if err else "")).strip()
+
+    def listdir(self, path: str) -> list[str]:
+        with self._lock:
+            self.ensure_connected()
+            assert self._client is not None
+            sftp = self._client.open_sftp()
+            try:
+                return sorted(sftp.listdir(path), key=str.lower)
+            finally:
+                sftp.close()
+
+    def download_file(self, remote_path: str, local_path: str) -> None:
+        with self._lock:
+            self.ensure_connected()
+            assert self._client is not None
+            sftp = self._client.open_sftp()
+            try:
+                sftp.get(remote_path, local_path)
+            finally:
+                sftp.close()
+
+    def upload_file(self, local_path: str, remote_path: str) -> None:
+        with self._lock:
+            self.ensure_connected()
+            assert self._client is not None
+            sftp = self._client.open_sftp()
+            try:
+                sftp.put(local_path, remote_path)
+            finally:
+                sftp.close()
