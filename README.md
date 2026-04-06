@@ -25,33 +25,26 @@
 - [services/router_service.py](./services/router_service.py) - работа с Keenetic и JSON-конфигами
 - [services/editor_sync.py](./services/editor_sync.py) - temp-файлы и синхронизация редактирования
 - [ssh_session.py](./ssh_session.py) - SSH-сессия на Paramiko
-- [config.py](./config.py) - значения по умолчанию и чтение `.env`
+- [config.py](./config.py) - основные настройки приложения
 - [vpn_tray.spec](./vpn_tray.spec) - сборка через PyInstaller
 
 ## Настройка
 
-Пользовательские настройки задаются в файле `.env`.
+Основные настройки задаются в [config.py](./config.py).
 
-Создайте `.env` рядом с приложением или возьмите за основу [.env.example](./.env.example):
+Для локальных значений можно использовать [config_local.py](./config_local.py). Если файл существует, он перекрывает параметры из `config.py`.
 
-```env
-ROUTER_HOST=192.168.1.1
-ROUTER_PORT=22
-ROUTER_USER=root
-ROUTER_PASSWORD=ваш_пароль
-XRAY_CONFIG_DIR=/opt/etc/xray/configs
-NOTEPADPP_PATH=C:\Program Files\Notepad++\notepad++.exe
-```
+Обычно имеет смысл менять:
 
-Без пересборки можно менять:
-
-- адрес и SSH-доступ к роутеру
-- команды управления `xkeen`
-- пути к конфигам и temp-папке
-- путь к `Notepad++`
-- стартовые сайты для проверок
-
-`config.py` теперь нужен в основном как кодовый слой с дефолтами.
+- `ROUTER_HOST`
+- `ROUTER_PORT`
+- `ROUTER_USER`
+- `ROUTER_PASSWORD`
+- `XRAY_CONFIG_DIR`
+- `CMD_VPN_ON`
+- `CMD_VPN_OFF`
+- `CMD_STATUS`
+- `NOTEPADPP_CANDIDATES`
 
 ## Запуск
 
