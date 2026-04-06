@@ -34,7 +34,7 @@ class StatsWindow:
     def __init__(self, app: "VPNTrayApp"):
         self.app = app
         self.root = tk.Tk()
-        self.root.title("VPN Tray")
+        self.root.title("Управление xkeen")
         self.root.geometry("1220x780")
         self.root.minsize(1080, 700)
         self.root.configure(bg=self.BG)
@@ -142,14 +142,14 @@ class StatsWindow:
 
         tk.Label(
             title_block,
-            text="VPN Control Center",
+            text="Управление xkeen",
             bg=self.PANEL_ALT,
             fg=self.INK,
             font=("Bahnschrift SemiBold", 24),
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text="Роутер, маршруты и конфиги",
+            text="Keenetic, маршруты и конфиги",
             bg=self.PANEL_ALT,
             fg=self.MUTED,
             font=("Segoe UI", 10),
@@ -224,7 +224,7 @@ class StatsWindow:
         self.status_hint.grid(row=2, column=0, sticky="w")
 
         self.uptime_value, self.uptime_hint = self._build_metric_card(cards_row, 0, 1, "Аптайм", padx=(0, 10), pady=(0, 10), wraplength=220)
-        self.load_value, self.load_hint = self._build_metric_card(cards_row, 0, 2, "Load Average", pady=(0, 10), wraplength=220)
+        self.load_value, self.load_hint = self._build_metric_card(cards_row, 0, 2, "Средняя нагрузка", pady=(0, 10), wraplength=220)
         self.cpu_value, self.cpu_hint = self._build_metric_card(cards_row, 1, 0, "Нагрузка xray", padx=(0, 10), wraplength=220)
         self.memory_value, self.memory_hint = self._build_metric_card(cards_row, 1, 1, "RAM", columnspan=2, wraplength=460)
 
@@ -400,11 +400,9 @@ class StatsWindow:
         editor_path = self.app.get_notepadpp_path()
         if editor_path:
             editor_name = "Notepad++"
-            editor_hint = editor_path
         else:
             editor_name = "Системный редактор"
-            editor_hint = "Notepad++ не найден, будет использовано приложение Windows по умолчанию"
-        self.root.title(f"VPN Tray [{editor_name}]")
+        self.root.title(f"Управление xkeen [{editor_name}]")
 
     def _build_metric_card(
         self,
@@ -461,7 +459,7 @@ class StatsWindow:
         self.cpu_hint.config(text="CPU процесса")
 
         self.memory_value.config(text=stats.memory)
-        self.memory_hint.config(text="used / total / free")
+        self.memory_hint.config(text="использовано / всего / свободно")
 
     def _add_check_card(self, parent: tk.Widget, check: ConnectivityCheck) -> None:
         if check.ok:
@@ -538,7 +536,7 @@ class StatsWindow:
             badge_text = "ВЫКЛЮЧЕН"
             badge_bg = self.DANGER_SOFT
             badge_fg = self.DANGER
-            hint = "Xray остановлен"
+            hint = "xkeen остановлен"
         else:
             badge_text = "НЕИЗВЕСТНО"
             badge_bg = self.WARN_SOFT

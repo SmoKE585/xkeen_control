@@ -1,29 +1,29 @@
-# VPN_TRAY
+# xkeen_control
 
-Windows tray app for managing Xray VPN on a router over SSH.
+Приложение для Windows с иконкой в трее для управления сервисом `xkeen`, поднятым на роутере Keenetic.
 
-## Features
+## Что умеет
 
-- tray icon with VPN status
-- enable, disable and restart VPN
-- restart action with `stop -> wait 3 sec -> start`
-- Windows autostart toggle
-- router diagnostics in the main window
-- connectivity checks for direct, RU and NL routes
-- browse and edit Xray JSON configs from SMB share
-- open configs in Notepad++ when available
+- показывает статус `xkeen` в трее
+- включает, выключает и перезапускает `xkeen`
+- перезапускает сервис по схеме `stop -> 3 сек -> start`
+- включает или отключает автозапуск приложения вместе с Windows
+- показывает сводку по роутеру: аптайм, среднюю нагрузку, CPU и память
+- проверяет доступность сайтов по разным маршрутам
+- открывает и редактирует JSON-конфиги из SMB-каталога роутера
+- использует Notepad++, если он установлен
 
-## Project Files
+## Основные файлы
 
-- [app.py](./app.py) - app logic, SSH commands, tray actions
-- [ui.py](./ui.py) - Tkinter UI
-- [ssh_session.py](./ssh_session.py) - reusable Paramiko session
-- [config.py](./config.py) - router, SMB and command settings
-- [vpn_tray.spec](./vpn_tray.spec) - PyInstaller spec
+- [app.py](./app.py) - логика приложения, SSH-команды, действия трея
+- [ui.py](./ui.py) - интерфейс Tkinter
+- [ssh_session.py](./ssh_session.py) - SSH-сессия на Paramiko
+- [config.py](./config.py) - настройки роутера, SMB и команд
+- [vpn_tray.spec](./vpn_tray.spec) - сборка через PyInstaller
 
-## Configuration
+## Настройка
 
-Edit [config.py](./config.py):
+Основные параметры лежат в [config.py](./config.py):
 
 - `ROUTER_HOST`
 - `ROUTER_PORT`
@@ -38,41 +38,41 @@ Edit [config.py](./config.py):
 - `CMD_STATUS`
 - `CONNECTIVITY_CHECKS`
 
-For local secrets create `config_local.py`. It overrides values from `config.py` and is ignored by git.
+Для локальных секретов создайте `config_local.py`. Этот файл перекрывает значения из `config.py` и не попадает в git.
 
-Example:
+Пример:
 
 ```python
-SMB_PASS = "your_password"
-ROUTER_PASSWORD = "your_password"
+SMB_PASS = "ваш_пароль"
+ROUTER_PASSWORD = "ваш_пароль"
 ```
 
-## Run
+## Запуск
 
 ```powershell
 python vpn_tray.py
 ```
 
-## Build EXE
+## Сборка exe
 
 ```powershell
 cmd /c build_exe.bat
 ```
 
-Built file:
+Готовый файл:
 
 ```text
 dist\vpn_tray.exe
 ```
 
-## Requirements
+## Требования
 
 - Windows 10/11
 - Python 3.11+
-- router with SSH access
-- SMB access to Xray config directory
+- доступ к Keenetic по SSH
+- доступ к SMB-каталогу с конфигами
 
-## Dependencies
+## Зависимости
 
 - `paramiko`
 - `pystray`
