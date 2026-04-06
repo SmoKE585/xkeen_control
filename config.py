@@ -1,12 +1,13 @@
 import os
 from urllib.parse import urlparse
-from env_utils import env_value, load_env_file
+from env_utils import env_value, find_env_file, load_env_file, resolve_app_dir
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_FILE = os.path.join(BASE_DIR, ".env")
+APP_DIR = resolve_app_dir(BASE_DIR)
+ENV_FILE = find_env_file(BASE_DIR)
 ENV = load_env_file(ENV_FILE)
 ICON_DIR = os.path.join(BASE_DIR, "assets", "icons")
-APP_DATA_DIR = env_value("APP_DATA_DIR", os.path.join(os.environ.get("LOCALAPPDATA", BASE_DIR), "xKeen Control"), ENV)
+APP_DATA_DIR = env_value("APP_DATA_DIR", os.path.join(os.environ.get("LOCALAPPDATA", APP_DIR), "xKeen Control"), ENV)
 APP_ICON_ICO = env_value("APP_ICON_ICO", os.path.join(ICON_DIR, "app.ico"), ENV)
 TRAY_ICON_ON = env_value("TRAY_ICON_ON", os.path.join(ICON_DIR, "vpn_on.svg"), ENV)
 TRAY_ICON_OFF = env_value("TRAY_ICON_OFF", os.path.join(ICON_DIR, "vpn_off.svg"), ENV)
